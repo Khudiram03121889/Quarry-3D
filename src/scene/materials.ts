@@ -5,6 +5,8 @@ export interface QuarryMaterialLibrary {
   cliffStone: THREE.MeshStandardMaterial;
   boulderStone: THREE.MeshStandardMaterial;
   arenaGround: THREE.MeshStandardMaterial;
+  kutchaRoad: THREE.MeshStandardMaterial;
+  roadBerm: THREE.MeshStandardMaterial;
   puddleWater: THREE.MeshPhysicalMaterial;
   corrugatedIron: THREE.MeshStandardMaterial;
   darkSteel: THREE.MeshStandardMaterial;
@@ -68,6 +70,28 @@ export function createQuarryMaterials(
       roughnessMap: tex.groundRoughness,
       roughness: 0.92,
       metalness: 0.05,
+    }),
+  );
+
+  const kutchaRoad = reg(
+    new THREE.MeshStandardMaterial({
+      map: tex.kutchaRoadColor,
+      bumpMap: tex.kutchaRoadBump,
+      bumpScale: 0.52,
+      roughnessMap: tex.kutchaRoadRoughness,
+      roughness: 0.94,
+      metalness: 0.03,
+    }),
+  );
+
+  const roadBerm = reg(
+    new THREE.MeshStandardMaterial({
+      map: tex.stoneColor,
+      bumpMap: tex.stoneBump,
+      bumpScale: 0.72,
+      color: 0x8f7356,
+      roughness: 0.95,
+      metalness: 0.03,
     }),
   );
 
@@ -275,6 +299,8 @@ export function createQuarryMaterials(
     cliffStone,
     boulderStone,
     arenaGround,
+    kutchaRoad,
+    roadBerm,
     puddleWater,
     corrugatedIron,
     darkSteel,

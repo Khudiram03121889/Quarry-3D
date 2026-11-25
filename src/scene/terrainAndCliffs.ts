@@ -1,5 +1,11 @@
 import * as THREE from 'three';
 import type { QuarryMaterialLibrary } from './materials';
+import {
+  getQuarryHaulRoads,
+  queryRoadCorridorClearance,
+  sampleKutchaRoadFrame,
+  type KutchaRoadSpec,
+} from './haulRoads';
 
 /**
  * Deterministic terrain height function for the entire KGF Quarry basin.
@@ -79,6 +85,7 @@ export function createTerrainAndCliffs(
 ): QuarryTerrainResult {
   const group = new THREE.Group();
   const geometries: THREE.BufferGeometry[] = [];
+  const extraMaterials: THREE.Material[] = [];
 
   // ---------------------------------------------------------------------------
   // 1. PLAYABLE FIGHTING GROUND (36m x 15m core + apron to 48m x 26m)
@@ -145,7 +152,13 @@ export function createTerrainAndCliffs(
       pos.setY(i, -0.45);
       tmpCol.setRGB(0.45, 0.36, 0.28);
     } else {
-      const h = groundHeightAt(vx, wz);
+      let h = groundHeightAt(vx, wz);
+
+      // Carve & depress cliff mesh beneath both two-lane kutcha haul roads so rock never pokes through
+      const clearance = queryRoadCorridorClearance(vx, wz, 6.2);
+      if (clearance.blend > 0) {
+        h = THREE.MathUtils.lerp(h, clearance.roadY - 0.85, clearance.blend);
+      }
       pos.setY(i, h);
 
       // Geological rock color banding by elevation: darker coal/slate at base, dusty ochre-limestone on terraces
@@ -170,76 +183,185 @@ export function createTerrainAndCliffs(
   group.add(cliffMesh);
 
   // ---------------------------------------------------------------------------
-  // 3. CARVED SWITCHBACK QUARRY HAUL ROAD EMBANKMENT (Visible in Panel A & D)
+  // 3. WIDE TWO-LANE KUTCHA (UNPAVED DIRT & GRAVEL) QUARRY HAUL ROADS + SAFETY BERMS
+  //    Shared exact spline curves with vehicles.ts so opposing dump trucks pass
+  //    side-by-side cleanly on dedicated tire-rutted lanes with zero glitches!
   // ---------------------------------------------------------------------------
-  const roadPoints = [
-    new THREE.Vector3(-24, 0.3, -18),
-    new THREE.Vector3(-8, 1.8, -22),
-    new THREE.Vector3(6, 4.2, -28),
-    new THREE.Vector3(16, 6.2, -35),
-    new THREE.Vector3(4, 8.6, -42),
-    new THREE.Vector3(-14, 10.6, -46),
-    new THREE.Vector3(-28, 12.2, -52),
-  ];
-  const roadCurve = new THREE.CatmullRomCurve3(roadPoints);
-  const roadSegs = 48;
-  const roadWidth = 5.4;
-  const roadVerts: number[] = [];
-  const roadUvs: number[] = [];
-  const roadIndices: number[] = [];
+  const haulRoads = getQuarryHaulRoads();
 
-  const up = new THREE.Vector3(0, 1, 0);
-  const tan = new THREE.Vector3();
-  const side = new THREE.Vector3();
+  const postMat = new THREE.MeshStandardMaterial({
+    color: 0xd9d2c5,
+    roughness: 0.72,
+    metalness: 0.15,
+  });
+  const postStripeMat = new THREE.MeshStandardMaterial({
+    color: 0xc22b1e,
+    emissive: 0x3a0c08,
+    emissiveIntensity: 0.45,
+    roughness: 0.52,
+    metalness: 0.1,
+  });
+  extraMaterials.push(postMat, postStripeMat);
 
-  for (let i = 0; i <= roadSegs; i++) {
-    const t = i / roadSegs;
-    const pt = roadCurve.getPoint(t);
-    roadCurve.getTangent(t, tan).normalize();
-    side.crossVectors(tan, up).normalize();
+  const bollardTransforms: Array<{ x: number; y: number; z: number; ry: number }> = [];
+  const bermRockTransforms: Array<{
+    x: number;
+    y: number;
+    z: number;
+    sx: number;
+    sy: number;
+    sz: number;
+    ry: number;
+    rx: number;
+    tint: number;
+  }> = [];
 
-    const left = pt.clone().addScaledVector(side, -roadWidth * 0.5);
-    const right = pt.clone().addScaledVector(side, roadWidth * 0.5);
-    const skirtL = left.clone().setY(left.y - 5.5);
-    const skirtR = right.clone().setY(right.y - 5.5);
+  const tmpPos = new THREE.Vector3();
+  const tmpTan = new THREE.Vector3();
+  const tmpRight = new THREE.Vector3();
 
-    roadVerts.push(
-      skirtL.x, skirtL.y, skirtL.z,
-      left.x, left.y, left.z,
-      right.x, right.y, right.z,
-      skirtR.x, skirtR.y, skirtR.z,
-    );
-    roadUvs.push(0, t * 8, 0.2, t * 8, 0.8, t * 8, 1, t * 8);
+  // Helper builds a swept ribbon mesh from cross-section profile points (lat, dy, u) with +Y normals
+  const buildRibbonMesh = (
+    spec: KutchaRoadSpec,
+    profile: Array<{ lat: number; dy: number; u: number }>,
+    material: THREE.Material,
+    vRepeatScale: number,
+  ) => {
+    const segs = spec.segments;
+    const cols = profile.length;
+    const arcLen = spec.curve.getLength();
+    const verts: number[] = [];
+    const uvs: number[] = [];
+    const indices: number[] = [];
 
-    if (i < roadSegs) {
-      const base = i * 4;
-      const next = (i + 1) * 4;
-      // Left embankment, road deck, right embankment
-      for (let q = 0; q < 3; q++) {
-        roadIndices.push(base + q, next + q, base + q + 1);
-        roadIndices.push(base + q + 1, next + q, next + q + 1);
+    for (let i = 0; i <= segs; i++) {
+      const t = i / segs;
+      sampleKutchaRoadFrame(spec.curve, t, 0, tmpPos, tmpTan, tmpRight);
+      const vCoord = t * (arcLen / vRepeatScale);
+
+      for (let c = 0; c < cols; c++) {
+        const p = profile[c];
+        const px = tmpPos.x + tmpRight.x * p.lat;
+        const py = tmpPos.y + p.dy;
+        const pz = tmpPos.z + tmpRight.z * p.lat;
+        verts.push(px, py, pz);
+        uvs.push(p.u, vCoord);
       }
+
+      if (i < segs) {
+        const base = i * cols;
+        const next = (i + 1) * cols;
+        // Winding order: (base+q, base+q+1, next+q) -> (+right) x (+tan) = +Y (upward normals!)
+        for (let q = 0; q < cols - 1; q++) {
+          indices.push(base + q, base + q + 1, next + q);
+          indices.push(base + q + 1, next + q + 1, next + q);
+        }
+      }
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    geo.setIndex(indices);
+    geo.computeVertexNormals();
+    geometries.push(geo);
+
+    const mesh = new THREE.Mesh(geo, material);
+    mesh.receiveShadow = true;
+    mesh.castShadow = false;
+    group.add(mesh);
+  };
+
+  for (const spec of haulRoads.all) {
+    const halfW = spec.width * 0.5; // 4.70m
+
+    // 3A. Two-lane kutcha dirt & gravel carriageway with subtle dusty center crown + compacted wheel tracks
+    const carriagewayProfile = [
+      { lat: -halfW, dy: -0.02, u: 0.0 },
+      { lat: -3.25, dy: -0.025, u: 0.155 },
+      { lat: -1.45, dy: -0.025, u: 0.345 },
+      { lat: 0.0, dy: 0.065, u: 0.5 }, // Dusty unpaved gravel center crown dividing opposing lanes
+      { lat: 1.45, dy: -0.025, u: 0.655 },
+      { lat: 3.25, dy: -0.025, u: 0.845 },
+      { lat: halfW, dy: -0.02, u: 1.0 },
+    ];
+    buildRibbonMesh(spec, carriagewayProfile, materials.kutchaRoad, 9.2);
+
+    // 3B. Inner hillside cut-verge & drainage bank (-Z side)
+    const innerEmbankmentProfile = [
+      { lat: -halfW - 5.2, dy: -5.8, u: 0.0 },
+      { lat: -halfW - 1.1, dy: 0.38, u: 0.65 },
+      { lat: -halfW + 0.04, dy: -0.02, u: 1.0 },
+    ];
+    buildRibbonMesh(spec, innerEmbankmentProfile, materials.roadBerm, 8.0);
+
+    // 3C. Outer quarry drop-off raised dirt/stone safety berm (bund) & deep retaining embankment (+Z side)
+    const outerEmbankmentProfile = [
+      { lat: halfW - 0.04, dy: -0.02, u: 0.0 },
+      { lat: halfW + 0.52, dy: 0.56, u: 0.18 }, // Raised compacted-earth quarry safety bund inner crest
+      { lat: halfW + 1.2, dy: 0.50, u: 0.34 }, // Safety bund outer crest
+      { lat: halfW + 3.2, dy: -2.4, u: 0.65 }, // Steep rocky retaining slope
+      { lat: halfW + 7.8, dy: -9.8, u: 1.0 }, // Deeply grounded into quarry pit floor
+    ];
+    buildRibbonMesh(spec, outerEmbankmentProfile, materials.roadBerm, 8.0);
+
+    // 3D. Quarry edge reflective guide bollards & safety bund boulders along outer drop-off crest
+    const bollardCount = spec.id === 'lower' ? 16 : 12;
+    for (let b = 1; b < bollardCount; b++) {
+      const u = b / bollardCount;
+      sampleKutchaRoadFrame(spec.curve, u, halfW + 0.86, tmpPos, tmpTan);
+      bollardTransforms.push({
+        x: tmpPos.x,
+        y: tmpPos.y + 0.44,
+        z: tmpPos.z,
+        ry: Math.atan2(tmpTan.x, tmpTan.z),
+      });
+
+      // Pair rough quarry safety stones embedded into the dirt berm between bollards
+      const rockU = Math.min(0.96, u + 0.5 / bollardCount);
+      sampleKutchaRoadFrame(spec.curve, rockU, halfW + 0.82, tmpPos, tmpTan);
+      const rScale = 0.42 + ((b * 37) % 10) * 0.032;
+      bermRockTransforms.push({
+        x: tmpPos.x,
+        y: tmpPos.y + 0.48,
+        z: tmpPos.z,
+        sx: rScale * 1.35,
+        sy: rScale * 0.72,
+        sz: rScale * 1.1,
+        ry: b * 1.7,
+        rx: 0.12,
+        tint: 0.76 + (b % 3) * 0.08,
+      });
     }
   }
 
-  const roadGeo = new THREE.BufferGeometry();
-  roadGeo.setAttribute('position', new THREE.Float32BufferAttribute(roadVerts, 3));
-  roadGeo.setAttribute('uv', new THREE.Float32BufferAttribute(roadUvs, 2));
-  roadGeo.setIndex(roadIndices);
-  roadGeo.computeVertexNormals();
-  geometries.push(roadGeo);
+  // Instanced weathered red/white quarry road edge guide posts
+  const bollardPostGeo = new THREE.CylinderGeometry(0.085, 0.1, 1.05, 8);
+  const bollardBandGeo = new THREE.CylinderGeometry(0.095, 0.095, 0.28, 8);
+  geometries.push(bollardPostGeo, bollardBandGeo);
 
-  const roadMesh = new THREE.Mesh(roadGeo, materials.arenaGround);
-  roadMesh.receiveShadow = true;
-  group.add(roadMesh);
+  const bollardPosts = new THREE.InstancedMesh(bollardPostGeo, postMat, bollardTransforms.length);
+  const bollardBands = new THREE.InstancedMesh(bollardBandGeo, postStripeMat, bollardTransforms.length);
+  bollardPosts.castShadow = true;
+  bollardPosts.receiveShadow = true;
+  const bDummy = new THREE.Object3D();
+  for (let i = 0; i < bollardTransforms.length; i++) {
+    const bt = bollardTransforms[i];
+    bDummy.position.set(bt.x, bt.y + 0.42, bt.z);
+    bDummy.rotation.set(0, bt.ry, 0);
+    bDummy.scale.set(1, 1, 1);
+    bDummy.updateMatrix();
+    bollardPosts.setMatrixAt(i, bDummy.matrix);
 
-  // Upper horizontal quarry bench road (z ~ -56, y ~ 14.2) for upper dump trucks
-  const upperBenchGeo = new THREE.BoxGeometry(92, 6, 7.5);
-  geometries.push(upperBenchGeo);
-  const upperBench = new THREE.Mesh(upperBenchGeo, materials.boulderStone);
-  upperBench.position.set(-4, 11.2, -56);
-  upperBench.receiveShadow = true;
-  group.add(upperBench);
+    bDummy.position.set(bt.x, bt.y + 0.72, bt.z);
+    bDummy.updateMatrix();
+    bollardBands.setMatrixAt(i, bDummy.matrix);
+  }
+  bollardPosts.instanceMatrix.needsUpdate = true;
+  bollardBands.instanceMatrix.needsUpdate = true;
+  bollardPosts.computeBoundingSphere();
+  bollardBands.computeBoundingSphere();
+  group.add(bollardPosts, bollardBands);
 
   // ---------------------------------------------------------------------------
   // 4. INSTANCED BOULDERS, FOREGROUND ROCK FRAMING & SCATTERED RUBBLE
@@ -304,6 +426,11 @@ export function createTerrainAndCliffs(
     return seed / 4294967296;
   };
 
+  // Include safety bund boulders along the outer kutcha road berms
+  for (const br of bermRockTransforms) {
+    rockTransforms.push(br);
+  }
+
   for (let i = 0; i < 115; i++) {
     let rx: number;
     let rz: number;
@@ -323,6 +450,11 @@ export function createTerrainAndCliffs(
       rx = (rand() - 0.5) * 95;
       rz = -16 - rand() * 52;
       scale = 1.2 + rand() * 3.1;
+    }
+
+    // Keep both kutcha haul roads and their berms 100% clear of random scattered rocks
+    if (queryRoadCorridorClearance(rx, rz, 6.8).inside) {
+      continue;
     }
 
     const gy = groundHeightAt(rx, rz);
@@ -368,6 +500,7 @@ export function createTerrainAndCliffs(
     group,
     dispose: () => {
       geometries.forEach((g) => g.dispose());
+      extraMaterials.forEach((m) => m.dispose());
     },
   };
 }

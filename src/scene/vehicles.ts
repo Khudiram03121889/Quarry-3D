@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { QuarryMaterialLibrary } from './materials';
 import { groundHeightAt } from './terrainAndCliffs';
+import { getQuarryHaulRoads, sampleKutchaRoadFrame } from './haulRoads';
 
 export interface QuarryVehiclesResult {
   group: THREE.Group;
@@ -11,9 +12,11 @@ export interface QuarryVehiclesResult {
 interface MovingTruck {
   root: THREE.Group;
   wheels: THREE.Mesh[];
+  roadId: 'lower' | 'upper';
   curve: THREE.CatmullRomCurve3;
+  laneOffset: number;
   progress: number;
-  speed: number; // curve t per second
+  speed: number; // curve u per second
   direction: 1 | -1;
   bouncePhase: number;
   dustTimer: number;
@@ -31,6 +34,7 @@ interface DustPuff {
 // Module-scope scratch helpers (zero GC in render loop)
 const _pos = new THREE.Vector3();
 const _nextPos = new THREE.Vector3();
+const _tan = new THREE.Vector3();
 const _lookTarget = new THREE.Vector3();
 const _rearWorld = new THREE.Vector3();
 
@@ -68,6 +72,7 @@ export function createQuarryVehicles(
   hubGeo.rotateZ(Math.PI / 2);
   const exhaustGeo = trackGeo(new THREE.CylinderGeometry(0.08, 0.09, 1.5, 8));
   const headlightGeo = trackGeo(new THREE.BoxGeometry(0.32, 0.2, 0.08));
+  const taillightGeo = trackGeo(new THREE.BoxGeometry(0.28, 0.16, 0.08));
   const beaconGeo = trackGeo(new THREE.CylinderGeometry(0.1, 0.12, 0.2, 8));
 
   const headlightMat = trackMat(
@@ -79,7 +84,18 @@ export function createQuarryVehicles(
     }),
   );
 
-  const buildMiningDumpTruck = (scale = 1.0): { root: THREE.Group; wheels: THREE.Mesh[]; headlights: THREE.Mesh[] } => {
+  const taillightMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      color: 0xb81f1a,
+      emissive: 0xff2c1a,
+      emissiveIntensity: 1.6,
+      roughness: 0.25,
+    }),
+  );
+
+  const buildMiningDumpTruck = (
+    scale = 1.0,
+  ): { root: THREE.Group; wheels: THREE.Mesh[]; headlights: THREE.Mesh[] } => {
     const truck = new THREE.Group();
     truck.scale.setScalar(scale);
 
@@ -130,9 +146,11 @@ export function createQuarryVehicles(
     addPart(exhaustGeo, materials.darkSteel, 0.95, 2.65, 1.25, 0, 0, 0, false);
     addPart(exhaustGeo, materials.darkSteel, 0.72, 2.65, 1.25, 0, 0, 0, false);
 
-    // Glowing headlights on front bumper
+    // Glowing headlights on front bumper + red brake/taillights on rear chassis
     const hl1 = addPart(headlightGeo, headlightMat, -0.88, 1.25, 2.55, 0, 0, 0, false);
     const hl2 = addPart(headlightGeo, headlightMat, 0.88, 1.25, 2.55, 0, 0, 0, false);
+    addPart(taillightGeo, taillightMat, -0.92, 1.12, -2.48, 0, 0, 0, false);
+    addPart(taillightGeo, taillightMat, 0.92, 1.12, -2.48, 0, 0, 0, false);
 
     // 4 oversized mining wheels (front pair + dual-width rear drive tires) with yellow hubs
     const wheels: THREE.Mesh[] = [];
@@ -157,66 +175,58 @@ export function createQuarryVehicles(
   };
 
   // ===========================================================================
-  // HAUL ROAD PATHS FOR MOVING DUMP TRUCKS (Matching Panels A, C, D!)
+  // TWO-LANE KUTCHA HAUL ROAD NETWORK (Side-by-side collision-free traffic!)
   // ===========================================================================
-  // Path 1: Lower winding switchback quarry ramp clearly visible center-back in Panel A & D
-  const lowerRoadCurve = new THREE.CatmullRomCurve3([
-    new THREE.Vector3(-25, 0.35, -18),
-    new THREE.Vector3(-8, 1.85, -22),
-    new THREE.Vector3(6, 4.25, -28),
-    new THREE.Vector3(16, 6.25, -35),
-    new THREE.Vector3(4, 8.65, -42),
-    new THREE.Vector3(-14, 10.65, -46),
-    new THREE.Vector3(-29, 12.25, -52),
-  ]);
-
-  // Path 2: Elevated horizontal upper quarry terrace beneath the cliffs (Panel A & C!)
-  const upperTerraceCurve = new THREE.CatmullRomCurve3([
-    new THREE.Vector3(-42, 14.3, -55.8),
-    new THREE.Vector3(-18, 14.3, -55.5),
-    new THREE.Vector3(4, 14.3, -55.8),
-    new THREE.Vector3(24, 14.3, -56.2),
-    new THREE.Vector3(38, 14.3, -56.0),
-  ]);
-
+  const haulRoads = getQuarryHaulRoads();
   const trucks: MovingTruck[] = [];
 
   const spawnTruck = (
-    curve: THREE.CatmullRomCurve3,
+    roadId: 'lower' | 'upper',
     startProgress: number,
     speed: number,
     direction: 1 | -1,
     scale: number,
   ) => {
+    const spec = roadId === 'lower' ? haulRoads.lower : haulRoads.upper;
+    // Left-hand / dedicated opposing lane assignment:
+    // direction +1 uses inner lane (-laneOffset), direction -1 uses outer lane (+laneOffset)
+    // Center-to-center lane separation is 4.70m vs ~3.35m truck width -> ~1.35m clear passing gap!
+    const laneOffset = direction === 1 ? -spec.laneOffset : spec.laneOffset;
     const built = buildMiningDumpTruck(scale);
     group.add(built.root);
     trucks.push({
       root: built.root,
       wheels: built.wheels,
       headlights: built.headlights,
-      curve,
+      roadId,
+      curve: spec.curve,
+      laneOffset,
       progress: startProgress,
       speed,
       direction,
-      bouncePhase: startProgress * 20,
-      dustTimer: 0,
+      bouncePhase: startProgress * 23.7 + (direction === 1 ? 0 : 3.1),
+      dustTimer: Math.random() * 0.25,
     });
   };
 
-  // 3 haul trucks continuously hauling ore along the winding switchback road
-  spawnTruck(lowerRoadCurve, 0.16, 0.036, 1, 1.05);
-  spawnTruck(lowerRoadCurve, 0.52, 0.032, 1, 1.0);
-  spawnTruck(lowerRoadCurve, 0.84, 0.034, -1, 1.0);
+  // Lower two-lane kutcha haul road: 2 trucks ascending (+1 inner lane), 2 descending (-1 outer lane)
+  // Matched lane speeds + headway guard prevent overtaking; opposing lanes pass cleanly side-by-side!
+  spawnTruck('lower', 0.18, 0.024, 1, 1.0);
+  spawnTruck('lower', 0.66, 0.024, 1, 0.98);
+  spawnTruck('lower', 0.36, 0.024, -1, 1.0);
+  spawnTruck('lower', 0.84, 0.024, -1, 1.02);
 
-  // 2 haul trucks cruising along the high cliff terrace
-  spawnTruck(upperTerraceCurve, 0.24, 0.042, 1, 1.12);
-  spawnTruck(upperTerraceCurve, 0.68, 0.038, -1, 1.12);
+  // Upper cliff-terrace two-lane kutcha haul road: 2 eastbound (+1), 2 westbound (-1)
+  spawnTruck('upper', 0.20, 0.026, 1, 1.04);
+  spawnTruck('upper', 0.70, 0.026, 1, 1.02);
+  spawnTruck('upper', 0.44, 0.026, -1, 1.04);
+  spawnTruck('upper', 0.92, 0.026, -1, 1.02);
 
   // ===========================================================================
-  // POOLED DUST TRAILS KICKED UP BEHIND MOVING DUMP TRUCKS
+  // POOLED DUST TRAILS KICKED UP BEHIND MOVING DUMP TRUCKS ON KUTCHA ROAD
   // ===========================================================================
   const dustPool: DustPuff[] = [];
-  for (let i = 0; i < 42; i++) {
+  for (let i = 0; i < 56; i++) {
     const mat = trackMat(
       new THREE.SpriteMaterial({
         map: smokeSprite,
@@ -244,27 +254,34 @@ export function createQuarryVehicles(
     dustPoolCursor = (dustPoolCursor + 1) % dustPool.length;
     p.active = true;
     p.age = 0;
-    p.life = 1.6 + Math.random() * 0.8;
+    p.life = 1.65 + Math.random() * 0.75;
     p.sprite.visible = true;
     p.sprite.position.set(
-      pos.x + (Math.random() - 0.5) * 1.4,
-      pos.y + 0.7,
-      pos.z + (Math.random() - 0.5) * 1.4,
+      pos.x + (Math.random() - 0.5) * 1.2,
+      pos.y + 0.65,
+      pos.z + (Math.random() - 0.5) * 1.2,
     );
-    p.sprite.scale.set(1.4, 1.2, 1);
-    p.vel.set((Math.random() - 0.5) * 0.7, 0.65 + Math.random() * 0.5, (Math.random() - 0.5) * 0.7);
+    p.sprite.scale.set(1.5, 1.25, 1);
+    p.vel.set(
+      (Math.random() - 0.5) * 0.65,
+      0.6 + Math.random() * 0.45,
+      (Math.random() - 0.5) * 0.65,
+    );
     const mat = p.sprite.material as THREE.SpriteMaterial;
     mat.color.setHex(sunElevation < 0.14 ? 0x4b4a52 : sunElevation < 0.45 ? 0xc29568 : 0xd2bd9d);
   };
 
   // ===========================================================================
   // COMPOSITE ARTICULATED MINING EXCAVATOR (Key Assets Reference!)
-  // Positioned working on a mid-left rocky ledge (x = -19.5, z = -23.5)
+  // Perched cleanly on a mid-left quarry bench between lower & upper kutcha roads
+  // (x = -21, z = -38.5 — 100% clear of all moving haul trucks & road berms)
   // ===========================================================================
   const excavatorBase = new THREE.Group();
-  const exY = groundHeightAt(-19.5, -23.5);
-  excavatorBase.position.set(-19.5, Math.max(0.4, exY), -23.5);
-  excavatorBase.rotation.y = 0.68;
+  const exX = -21.0;
+  const exZ = -38.5;
+  const exY = groundHeightAt(exX, exZ);
+  excavatorBase.position.set(exX, Math.max(2.6, exY), exZ);
+  excavatorBase.rotation.y = 0.72;
   group.add(excavatorBase);
 
   // Tracked undercarriage
@@ -346,8 +363,11 @@ export function createQuarryVehicles(
   bucketPivot.add(bucket);
 
   // ===========================================================================
-  // PER-FRAME VEHICLE KINEMATICS
+  // PER-FRAME VEHICLE KINEMATICS (Side-by-side lanes + Same-lane headway guard)
   // ===========================================================================
+  const MIN_SAME_LANE_HEADWAY = 0.22; // ~28-32m safe convoy separation on 140m kutcha roads
+  const HARD_STOP_HEADWAY = 0.14;
+
   const update = (
     elapsed: number,
     delta: number,
@@ -355,49 +375,80 @@ export function createQuarryVehicles(
     sunElevation: number,
   ) => {
     headlightMat.emissiveIntensity = THREE.MathUtils.clamp(2.8 - sunElevation * 2.2, 0.4, 3.2);
+    taillightMat.emissiveIntensity = THREE.MathUtils.clamp(2.0 - sunElevation * 1.2, 0.6, 2.2);
 
-    // 1. Move mining dump trucks smoothly along curved haul roads
+    // 1. Move mining dump trucks smoothly inside their dedicated kutcha road lanes
     for (let i = 0; i < trucks.length; i++) {
       const t = trucks[i];
-      const deltaT = t.speed * speedMultiplier * delta;
-      t.progress += deltaT * t.direction;
 
-      // Wrap seamlessly when reaching end of quarry road
-      if (t.progress >= 0.995) {
-        t.progress = 0.005;
-      } else if (t.progress <= 0.005) {
-        t.progress = 0.995;
+      // Runtime same-lane convoy spacing guard: prevents any same-lane truck from catching up
+      let headwayFactor = 1.0;
+      for (let j = 0; j < trucks.length; j++) {
+        if (i === j) continue;
+        const other = trucks[j];
+        if (other.roadId !== t.roadId || other.direction !== t.direction) continue;
+
+        const forwardGap =
+          t.direction === 1
+            ? (other.progress - t.progress + 1) % 1
+            : (t.progress - other.progress + 1) % 1;
+
+        if (forwardGap > 0 && forwardGap < MIN_SAME_LANE_HEADWAY) {
+          const factor = THREE.MathUtils.clamp(
+            (forwardGap - HARD_STOP_HEADWAY) / (MIN_SAME_LANE_HEADWAY - HARD_STOP_HEADWAY),
+            0,
+            1,
+          );
+          if (factor < headwayFactor) headwayFactor = factor;
+        }
       }
 
-      const lookDelta = 0.015 * t.direction;
-      const clampedNext = THREE.MathUtils.clamp(t.progress + lookDelta, 0, 1);
+      const deltaU = t.speed * headwayFactor * speedMultiplier * delta;
+      t.progress += deltaU * t.direction;
 
-      t.curve.getPointAt(t.progress, _pos);
-      t.curve.getPointAt(clampedNext, _nextPos);
+      // Wrap seamlessly beyond cliff edges so trucks enter/exit naturally off-screen
+      if (t.progress >= 0.992) {
+        t.progress = 0.008;
+      } else if (t.progress <= 0.008) {
+        t.progress = 0.992;
+      }
 
-      // Subtle diesel suspension vibration over quarry dirt
+      // Sample exact wheel-rut lane position & smooth forward look target along the same lane
+      sampleKutchaRoadFrame(t.curve, t.progress, t.laneOffset, _pos, _tan);
+
+      const lookStep = 0.012 * t.direction;
+      const aheadU = t.progress + lookStep;
+      if (aheadU >= 0 && aheadU <= 1) {
+        sampleKutchaRoadFrame(t.curve, aheadU, t.laneOffset, _nextPos);
+      } else {
+        // Near endpoints, extrapolate cleanly along the road tangent so orientation never glitches
+        _nextPos.copy(_pos).addScaledVector(_tan, 2.5 * t.direction);
+      }
+
+      // Subtle diesel suspension vibration over unpaved kutcha gravel ruts
       const suspensionJitter =
         speedMultiplier > 0.02
-          ? Math.sin(elapsed * 14 + t.bouncePhase) * 0.035
-          : Math.sin(elapsed * 22 + t.bouncePhase) * 0.008;
+          ? Math.sin(elapsed * 13 + t.bouncePhase) * 0.022
+          : Math.sin(elapsed * 20 + t.bouncePhase) * 0.006;
 
-      t.root.position.set(_pos.x, _pos.y + suspensionJitter, _pos.z);
+      // Wheels have radius 0.84 with center at local y = 0.84 -> local y = 0 sits flush on kutcha surface
+      t.root.position.set(_pos.x, _pos.y + 0.01 + suspensionJitter, _pos.z);
       _lookTarget.copy(_nextPos);
-      _lookTarget.y += suspensionJitter;
+      _lookTarget.y += 0.01 + suspensionJitter;
       t.root.lookAt(_lookTarget);
 
       // Spin massive mining tires proportional to truck movement
-      const wheelSpin = deltaT * 110;
+      const wheelSpin = deltaU * 145;
       for (let w = 0; w < t.wheels.length; w++) {
         t.wheels[w].rotation.x += wheelSpin;
       }
 
-      // Emit trailing dust clouds behind moving trucks
-      if (speedMultiplier > 0.05) {
+      // Emit trailing ochre kutcha dust clouds behind moving trucks
+      if (speedMultiplier > 0.05 && headwayFactor > 0.25) {
         t.dustTimer += delta * speedMultiplier;
-        if (t.dustTimer > 0.34) {
+        if (t.dustTimer > 0.36) {
           t.dustTimer = 0;
-          _rearWorld.set(0, 0.4, -2.5).applyMatrix4(t.root.matrixWorld);
+          _rearWorld.set(0, 0.35, -2.55).applyMatrix4(t.root.matrixWorld);
           spawnTruckDust(_rearWorld, sunElevation);
         }
       }
@@ -415,9 +466,9 @@ export function createQuarryVehicles(
       }
       const norm = p.age / p.life;
       p.sprite.position.addScaledVector(p.vel, delta);
-      const sc = 1.4 + norm * 4.2;
+      const sc = 1.45 + norm * 4.1;
       p.sprite.scale.set(sc, sc * 0.85, 1);
-      (p.sprite.material as THREE.SpriteMaterial).opacity = Math.sin(norm * Math.PI) * 0.36;
+      (p.sprite.material as THREE.SpriteMaterial).opacity = Math.sin(norm * Math.PI) * 0.34;
     }
 
     // 3. Animate quarry mining excavator digging & slewing cycle

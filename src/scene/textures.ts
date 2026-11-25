@@ -11,6 +11,11 @@ export interface QuarryTextureSet {
   groundBump: THREE.CanvasTexture;
   groundRoughness: THREE.CanvasTexture;
 
+  // Two-lane unpaved kutcha quarry haul road (side-by-side tire ruts + center gravel crown)
+  kutchaRoadColor: THREE.CanvasTexture;
+  kutchaRoadBump: THREE.CanvasTexture;
+  kutchaRoadRoughness: THREE.CanvasTexture;
+
   // Corrugated rusted iron (shed roof & walls)
   corrugatedColor: THREE.CanvasTexture;
   corrugatedBump: THREE.CanvasTexture;
@@ -298,6 +303,124 @@ export function createQuarryTextures(maxAnisotropy: number): QuarryTextureSet {
       gBmp.arc(px, py, rx * 0.72, 0, Math.PI * 2);
       gBmp.fill();
       gCol.restore();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 2B. TWO-LANE KUTCHA UNPACKED QUARRY HAUL ROAD (U across width, V along road)
+  // ---------------------------------------------------------------------------
+  const krSize = 512;
+  const [krColC, krCol] = makeCanvas(krSize, krSize);
+  const [krBmpC, krBmp] = makeCanvas(krSize, krSize);
+  const [krRghC, krRgh] = makeCanvas(krSize, krSize);
+  {
+    const rng = mulberry32(252);
+
+    // Base warm packed kutcha soil / red-brown quarry earth
+    krCol.fillStyle = '#826447';
+    krCol.fillRect(0, 0, krSize, krSize);
+    krBmp.fillStyle = '#8a8a8a';
+    krBmp.fillRect(0, 0, krSize, krSize);
+    krRgh.fillStyle = '#e8e8e8';
+    krRgh.fillRect(0, 0, krSize, krSize);
+
+    // Cross-section profile (x = 0..512 maps across road width: outer shoulders + 2 lanes + center crown)
+    // Dusty loose gravel shoulders on both edges (0..0.11 and 0.89..1.0)
+    const edgeGradL = krCol.createLinearGradient(0, 0, krSize * 0.14, 0);
+    edgeGradL.addColorStop(0, '#5a4635');
+    edgeGradL.addColorStop(0.55, '#9d7d59');
+    edgeGradL.addColorStop(1, 'rgba(130, 100, 71, 0)');
+    krCol.fillStyle = edgeGradL;
+    krCol.fillRect(0, 0, krSize * 0.14, krSize);
+
+    const edgeGradR = krCol.createLinearGradient(krSize, 0, krSize * 0.86, 0);
+    edgeGradR.addColorStop(0, '#5a4635');
+    edgeGradR.addColorStop(0.55, '#9d7d59');
+    edgeGradR.addColorStop(1, 'rgba(130, 100, 71, 0)');
+    krCol.fillStyle = edgeGradR;
+    krCol.fillRect(krSize * 0.86, 0, krSize * 0.14, krSize);
+
+    // Slightly raised dusty gravel center ridge separating left & right lanes (x ~ 0.44..0.56)
+    const centerGrad = krCol.createLinearGradient(krSize * 0.43, 0, krSize * 0.57, 0);
+    centerGrad.addColorStop(0, 'rgba(168, 138, 102, 0)');
+    centerGrad.addColorStop(0.5, 'rgba(168, 138, 102, 0.58)');
+    centerGrad.addColorStop(1, 'rgba(168, 138, 102, 0)');
+    krCol.fillStyle = centerGrad;
+    krCol.fillRect(krSize * 0.43, 0, krSize * 0.14, krSize);
+
+    const centerBmp = krBmp.createLinearGradient(krSize * 0.43, 0, krSize * 0.57, 0);
+    centerBmp.addColorStop(0, 'rgba(210, 210, 210, 0)');
+    centerBmp.addColorStop(0.5, 'rgba(225, 225, 225, 0.72)');
+    centerBmp.addColorStop(1, 'rgba(210, 210, 210, 0)');
+    krBmp.fillStyle = centerBmp;
+    krBmp.fillRect(krSize * 0.43, 0, krSize * 0.14, krSize);
+
+    // Four compacted heavy mining-truck tire ruts (2 per side-by-side lane!)
+    // Lane 1 centered at u = 0.25 -> wheel tracks at 0.155 and 0.345
+    // Lane 2 centered at u = 0.75 -> wheel tracks at 0.655 and 0.845
+    const rutCenters = [0.155, 0.345, 0.655, 0.845];
+    for (const rc of rutCenters) {
+      const cx = rc * krSize;
+      const halfW = krSize * 0.052;
+      const cGrad = krCol.createLinearGradient(cx - halfW, 0, cx + halfW, 0);
+      cGrad.addColorStop(0, 'rgba(58, 42, 28, 0)');
+      cGrad.addColorStop(0.35, 'rgba(54, 38, 25, 0.68)');
+      cGrad.addColorStop(0.65, 'rgba(54, 38, 25, 0.68)');
+      cGrad.addColorStop(1, 'rgba(58, 42, 28, 0)');
+      krCol.fillStyle = cGrad;
+      krCol.fillRect(cx - halfW, 0, halfW * 2, krSize);
+
+      // Depressed groove in bump map + slightly smoother compacted soil in roughness map
+      const bGrad = krBmp.createLinearGradient(cx - halfW, 0, cx + halfW, 0);
+      bGrad.addColorStop(0, 'rgba(42, 42, 42, 0)');
+      bGrad.addColorStop(0.5, 'rgba(34, 34, 34, 0.85)');
+      bGrad.addColorStop(1, 'rgba(42, 42, 42, 0)');
+      krBmp.fillStyle = bGrad;
+      krBmp.fillRect(cx - halfW, 0, halfW * 2, krSize);
+
+      const rGrad = krRgh.createLinearGradient(cx - halfW, 0, cx + halfW, 0);
+      rGrad.addColorStop(0, 'rgba(180, 180, 180, 0)');
+      rGrad.addColorStop(0.5, 'rgba(165, 165, 165, 0.55)');
+      rGrad.addColorStop(1, 'rgba(180, 180, 180, 0)');
+      krRgh.fillStyle = rGrad;
+      krRgh.fillRect(cx - halfW, 0, halfW * 2, krSize);
+
+      // Repeating heavy chevron tire tread impressions inside each rut
+      krCol.fillStyle = 'rgba(40, 28, 19, 0.25)';
+      krBmp.fillStyle = 'rgba(26, 26, 26, 0.35)';
+      for (let ty = 0; ty < krSize; ty += 16) {
+        krCol.fillRect(cx - halfW * 0.55, ty, halfW * 1.1, 5);
+        krBmp.fillRect(cx - halfW * 0.55, ty, halfW * 1.1, 5);
+      }
+    }
+
+    // Subtle transverse kutcha washboard dirt ripples & dusty patches
+    for (let i = 0; i < 65; i++) {
+      const y = rng() * krSize;
+      const h = 3 + rng() * 9;
+      krCol.fillStyle =
+        rng() > 0.5
+          ? `rgba(170, 138, 100, ${0.06 + rng() * 0.08})`
+          : `rgba(52, 38, 26, ${0.06 + rng() * 0.09})`;
+      krCol.fillRect(0, y, krSize, h);
+    }
+
+    // Crushed quarry gravel & loose stones concentrated on shoulders and center ridge
+    for (let i = 0; i < 2800; i++) {
+      const u = rng();
+      const px = u * krSize;
+      const py = rng() * krSize;
+      const onRidgeOrEdge = u < 0.11 || u > 0.89 || (u > 0.44 && u < 0.56);
+      const s = onRidgeOrEdge ? 1.5 + rng() * 4.2 : 1.0 + rng() * 2.2;
+      const light = rng() > 0.45;
+      krCol.fillStyle = light
+        ? `rgba(196, 168, 132, ${onRidgeOrEdge ? 0.45 : 0.24})`
+        : `rgba(46, 35, 26, ${onRidgeOrEdge ? 0.48 : 0.26})`;
+      krCol.fillRect(px, py, s, s * 0.85);
+
+      const bv = light ? 215 : 55;
+      krBmp.fillStyle = `rgba(${bv},${bv},${bv},${onRidgeOrEdge ? 0.58 : 0.32})`;
+      krBmp.fillRect(px, py, s, s * 0.85);
     }
   }
 
@@ -686,6 +809,10 @@ export function createQuarryTextures(maxAnisotropy: number): QuarryTextureSet {
     groundColor: reg(configureTexture(gColC, true, maxAnisotropy, 8, 6)),
     groundBump: reg(configureTexture(gBmpC, false, maxAnisotropy, 8, 6)),
     groundRoughness: reg(configureTexture(gRghC, false, maxAnisotropy, 8, 6)),
+
+    kutchaRoadColor: reg(configureTexture(krColC, true, maxAnisotropy, 1, 1)),
+    kutchaRoadBump: reg(configureTexture(krBmpC, false, maxAnisotropy, 1, 1)),
+    kutchaRoadRoughness: reg(configureTexture(krRghC, false, maxAnisotropy, 1, 1)),
 
     corrugatedColor: reg(configureTexture(corColC, true, maxAnisotropy, 3, 2)),
     corrugatedBump: reg(configureTexture(corBmpC, false, maxAnisotropy, 3, 2)),
