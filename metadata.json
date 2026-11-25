@@ -1,0 +1,6 @@
+{
+  "name": "The KGF Quarry — 3D Fighting Arena",
+  "description": "Interactive 3D fighting game quarry arena with realistic procedural stone textures, dynamic lighting, moving mining dump trucks, and destructible combat hazards.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
